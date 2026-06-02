@@ -3,6 +3,7 @@ import { ref, reactive, computed, onMounted, onUnmounted, watch, nextTick } from
 import { initIdentity, getMyPubkey } from './services/identity'
 import { getGeo } from './services/geo'
 import { contactSeller } from './services/proxy'
+import { getReputation } from './services/reputation'
 
 const KINDS = [
   { id: 'vendo', label: 'Vendo', color: 'var(--vendo)' },
@@ -158,10 +159,23 @@ async function removeMine () {
   } catch (e) { flash('No se pudo retirar.'); console.warn(e) }
 }
 
-// ---- contactar (handoff por el proxy) ----
-function openContact (pin) {
+// ---- contactar (handoff por el proxy) + reputación ----
+const sellerRep = ref(null)
+const repLoading = ref(false)
+const myStars = ref(0)
+const rating = ref(false)
+
+async function openContact (pin) {
   contactTarget.value = pin
   contactText.value = `Hola, me interesa tu anuncio "${pin.payload?.title || ''}".`
+  // Reputación del vendedor ANTES del trato, ponderada por mi web-of-trust.
+  sellerRep.value = null
+  myStars.value = 0
+  repLoading.value = true
+  try {
+    const rep = await getReputation()
+    sellerRep.value = rep ? await rep.reputationOf(pin.publickey) : null
+  } catch (e) { console.warn('[reputation] lookup', e) } finally { repLoading.value = false }
 }
 async function sendContact () {
   if (!contactTarget.value) return
@@ -180,6 +194,19 @@ async function sendContact () {
     sending.value = false
   }
 }
+// Calificar al vendedor tras el trato (publica atestación firmada al registro).
+async function rateSeller (stars) {
+  if (!contactTarget.value) return
+  myStars.value = stars
+  rating.value = true
+  try {
+    const rep = await getReputation()
+    if (!rep) throw new Error('sin identidad')
+    await rep.rate(contactTarget.value.publickey, stars, { notes: `trueque: ${contactTarget.value.payload?.title || ''}`.slice(0, 80) })
+    flash('Calificación publicada. Gracias.')
+  } catch (e) { flash('No se pudo calificar.'); console.warn(e) } finally { rating.value = false }
+}
+const repPct = computed(() => sellerRep.value?.score != null ? Math.round(sellerRep.value.score * 100) : null)
 
 // ---- radar (proximidad, sin tiles de terceros) ----
 const canvas = ref(null)
@@ -361,13 +388,39 @@ async function install () {
       <div class="sheet">
         <h3>Contactar</h3>
         <p class="muted small">Sobre: <strong>{{ contactTarget.payload?.title }}</strong></p>
+
+        <!-- Reputación del vendedor, ponderada por mi web-of-trust (anti-sybil) -->
+        <div class="rep">
+          <span class="repLabel">Reputación</span>
+          <span v-if="repLoading" class="muted small">consultando…</span>
+          <template v-else-if="sellerRep">
+            <span v-if="sellerRep.score != null" class="repScore">
+              <strong>{{ repPct }}%</strong>
+              <span class="muted small">{{ sellerRep.trustedCount }} de tu red{{ sellerRep.txBoundCount ? ` · ${sellerRep.txBoundCount} con recibo` : '' }}</span>
+            </span>
+            <span v-else-if="sellerRep.rawCount > 0" class="muted small">{{ sellerRep.rawCount }} reseña(s), ninguna de tu red — señal débil</span>
+            <span v-else class="muted small">sin historial</span>
+          </template>
+          <span v-else class="muted small">—</span>
+        </div>
+
         <label class="fld">
           <span>Mensaje</span>
           <input v-model="contactText" maxlength="280" />
         </label>
         <p class="muted tiny">Se envía por el proxy (cae en su messenger). Seguí la charla ahí.</p>
+
+        <!-- Calificar al vendedor (publica atestación firmada al registro) -->
+        <div class="rateRow">
+          <span class="muted small">Calificá tras el trato:</span>
+          <span class="rateStars">
+            <button v-for="n in 5" :key="n" class="starBtn" :class="{ on: n <= myStars }"
+                    :disabled="rating" @click="rateSeller(n)">★</button>
+          </span>
+        </div>
+
         <div class="sheetBtns">
-          <button class="btn ghost" @click="contactTarget = null">Cancelar</button>
+          <button class="btn ghost" @click="contactTarget = null">Cerrar</button>
           <button class="btn primary" :disabled="sending" @click="sendContact">{{ sending ? 'Enviando…' : 'Enviar' }}</button>
         </div>
       </div>
@@ -379,6 +432,16 @@ async function install () {
 
 <style scoped>
 .app { min-height: 100%; display: flex; flex-direction: column; padding-bottom: env(safe-area-inset-bottom); }
+
+.rep { display: flex; align-items: center; gap: .5rem; background: var(--panel2); border: 1px solid var(--line); border-radius: .6rem; padding: .5rem .7rem; margin: .2rem 0 .6rem; }
+.repLabel { font-size: .7rem; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); }
+.repScore { display: flex; align-items: center; gap: .5rem; }
+.repScore strong { color: var(--accent); font-size: 1.05rem; }
+.rateRow { display: flex; align-items: center; justify-content: space-between; gap: .6rem; margin: .2rem 0 .6rem; }
+.rateStars { display: inline-flex; gap: .1rem; }
+.starBtn { font-size: 1.3rem; color: var(--line); line-height: 1; padding: 0 .05rem; }
+.starBtn.on { color: var(--vendo); }
+.starBtn:disabled { opacity: .6; }
 
 .topbar {
   display: flex; align-items: center; gap: .5rem;
