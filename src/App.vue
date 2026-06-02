@@ -29,7 +29,7 @@ const myPin = ref(null)          // { payload, expiresAt }
 const now = ref(Date.now())
 
 const showPublish = ref(false)
-const form = reactive({ kind: 'vendo', title: '', price: '', ttlH: 6 })
+const form = reactive({ kind: 'vendo', title: '', price: '', tags: '', ttlH: 6 })
 const publishing = ref(false)
 
 const contactTarget = ref(null)
@@ -113,6 +113,8 @@ async function refresh () {
   try {
     const q = { lat: pos.value.lat, lng: pos.value.lng, radiusMeters: radiusMeters.value, limit: 100 }
     if (filter.value !== 'todos') q.filter = { kind: filter.value }
+    const tags = searchTags.value.split(/[\s,]+/).map(s => s.trim()).filter(Boolean)
+    if (tags.length) q.tags = tags
     const { pins: got } = await getGeo().queryRadius(q)
     const mine = getMyPubkey()
     pins.value = got
@@ -126,7 +128,10 @@ async function refresh () {
     loading.value = false
   }
 }
+const searchTags = ref('')   // búsqueda por etiquetas (overlap)
+let tagDebounce = null
 watch([radiusMeters, filter], () => { if (pos.value && ready.value) refresh() })
+watch(searchTags, () => { clearTimeout(tagDebounce); tagDebounce = setTimeout(() => { if (pos.value && ready.value) refresh() }, 400) })
 
 // ---- publicar ----
 async function doPublish () {
@@ -136,11 +141,12 @@ async function doPublish () {
   try {
     const payload = { kind: form.kind, title: form.title.trim().slice(0, 80) }
     if (form.kind === 'vendo' && form.price.trim()) payload.price = form.price.trim().slice(0, 24)
+    const tags = form.tags.split(/[\s,]+/).map(s => s.trim()).filter(Boolean)
     const ttlMs = Number(form.ttlH) * 3600 * 1000
-    const res = await getGeo().publishPin({ lat: pos.value.lat, lng: pos.value.lng, payload, ttlMs })
+    const res = await getGeo().publishPin({ lat: pos.value.lat, lng: pos.value.lng, payload, tags, ttlMs })
     myPin.value = { payload, expiresAt: res.expiresAt }
     showPublish.value = false
-    form.title = ''; form.price = ''
+    form.title = ''; form.price = ''; form.tags = ''
     flash('Anuncio publicado.')
     refresh()
   } catch (e) {
@@ -162,7 +168,8 @@ async function removeMine () {
 // ---- contactar (handoff por el proxy) + reputación ----
 const sellerRep = ref(null)
 const repLoading = ref(false)
-const myStars = ref(0)
+const myStars = ref(0)       // confianza
+const myAfin = ref(0)        // afinidad
 const rating = ref(false)
 
 async function openContact (pin) {
@@ -171,6 +178,7 @@ async function openContact (pin) {
   // Reputación del vendedor ANTES del trato, ponderada por mi web-of-trust.
   sellerRep.value = null
   myStars.value = 0
+  myAfin.value = 0
   repLoading.value = true
   try {
     const rep = await getReputation()
@@ -194,19 +202,26 @@ async function sendContact () {
     sending.value = false
   }
 }
-// Calificar al vendedor tras el trato (publica atestación firmada al registro).
-async function rateSeller (stars) {
+// Calificar al vendedor tras el trato (confianza + afinidad), firmado al registro.
+function setConf (n) { myStars.value = n; publishRate() }
+function setAfin (n) { myAfin.value = n; publishRate() }
+async function publishRate () {
   if (!contactTarget.value) return
-  myStars.value = stars
   rating.value = true
   try {
     const rep = await getReputation()
     if (!rep) throw new Error('sin identidad')
-    await rep.rate(contactTarget.value.publickey, stars, { notes: `trueque: ${contactTarget.value.payload?.title || ''}`.slice(0, 80) })
+    const indicators = { confianza: myStars.value }
+    if (myAfin.value > 0) indicators.afinidad = myAfin.value
+    await rep.rate(contactTarget.value.publickey, indicators, { notes: `trueque: ${contactTarget.value.payload?.title || ''}`.slice(0, 80) })
     flash('Calificación publicada. Gracias.')
   } catch (e) { flash('No se pudo calificar.'); console.warn(e) } finally { rating.value = false }
 }
 const repPct = computed(() => sellerRep.value?.score != null ? Math.round(sellerRep.value.score * 100) : null)
+const afinPct = computed(() => {
+  const a = sellerRep.value?.indicators?.afinidad
+  return a && a.score != null ? Math.round(a.score * 100) : null
+})
 
 // ---- radar (proximidad, sin tiles de terceros) ----
 const canvas = ref(null)
@@ -298,6 +313,8 @@ async function install () {
                   :style="filter === k.id ? { background: k.color, color: '#04140f', borderColor: 'transparent' } : {}"
                   @click="filter = k.id">{{ k.label }}</button>
         </div>
+        <input class="tagSearch" v-model="searchTags" maxlength="80"
+               placeholder="Buscar por etiqueta: bici, comida…" />
         <div class="radius">
           <span class="muted">Radio</span>
           <input type="range" min="300" max="10000" step="100" v-model.number="radiusMeters" />
@@ -368,6 +385,10 @@ async function install () {
           <input v-model="form.price" maxlength="24" placeholder="Ej: $80 / negociable" />
         </label>
         <label class="fld">
+          <span>Etiquetas (opcional, separadas por coma)</span>
+          <input v-model="form.tags" maxlength="120" placeholder="Ej: bici, rodado26, usado" />
+        </label>
+        <label class="fld">
           <span>Vence en</span>
           <select v-model.number="form.ttlH">
             <option :value="1">1 hora</option>
@@ -395,8 +416,9 @@ async function install () {
           <span v-if="repLoading" class="muted small">consultando…</span>
           <template v-else-if="sellerRep">
             <span v-if="sellerRep.score != null" class="repScore">
-              <strong>{{ repPct }}%</strong>
-              <span class="muted small">{{ sellerRep.trustedCount }} de tu red{{ sellerRep.txBoundCount ? ` · ${sellerRep.txBoundCount} con recibo` : '' }}</span>
+              <strong>{{ repPct }}%</strong> <span class="muted tiny">confianza</span>
+              <span v-if="afinPct != null" class="afinScore">· <strong>{{ afinPct }}%</strong> <span class="muted tiny">afinidad</span></span>
+              <span class="muted small">· {{ sellerRep.trustedCount }} de tu red{{ sellerRep.txBoundCount ? ` · ${sellerRep.txBoundCount} con recibo` : '' }}</span>
             </span>
             <span v-else-if="sellerRep.rawCount > 0" class="muted small">{{ sellerRep.rawCount }} reseña(s), ninguna de tu red — señal débil</span>
             <span v-else class="muted small">sin historial</span>
@@ -410,12 +432,19 @@ async function install () {
         </label>
         <p class="muted tiny">Se envía por el proxy (cae en su messenger). Seguí la charla ahí.</p>
 
-        <!-- Calificar al vendedor (publica atestación firmada al registro) -->
+        <!-- Calificar al vendedor tras el trato (publica atestación firmada) -->
         <div class="rateRow">
-          <span class="muted small">Calificá tras el trato:</span>
+          <span class="muted small">Confianza:</span>
           <span class="rateStars">
             <button v-for="n in 5" :key="n" class="starBtn" :class="{ on: n <= myStars }"
-                    :disabled="rating" @click="rateSeller(n)">★</button>
+                    :disabled="rating" @click="setConf(n)">★</button>
+          </span>
+        </div>
+        <div class="rateRow">
+          <span class="muted small">Afinidad:</span>
+          <span class="rateStars">
+            <button v-for="n in 5" :key="n" class="starBtn afin" :class="{ on: n <= myAfin }"
+                    :disabled="rating" @click="setAfin(n)">★</button>
           </span>
         </div>
 
@@ -441,7 +470,10 @@ async function install () {
 .rateStars { display: inline-flex; gap: .1rem; }
 .starBtn { font-size: 1.3rem; color: var(--line); line-height: 1; padding: 0 .05rem; }
 .starBtn.on { color: var(--vendo); }
+.starBtn.afin.on { color: var(--accent); }
 .starBtn:disabled { opacity: .6; }
+.tagSearch { width: 100%; }
+.afinScore { color: var(--accent); }
 
 .topbar {
   display: flex; align-items: center; gap: .5rem;
