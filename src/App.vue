@@ -1,9 +1,11 @@
 <script setup>
 import { ref, reactive, computed, onMounted, onUnmounted, watch, nextTick } from 'vue'
-import { initIdentity, getMyPubkey } from './services/identity'
+import { initIdentity, getMyPubkey, getIdentity } from './services/identity'
 import { getGeo } from './services/geo'
 import { contactSeller } from './services/proxy'
 import { getReputation } from './services/reputation'
+import { createVaultProfileProvider } from '@closerclick/closer-click-profile'
+import '@closerclick/closer-click-profile'
 
 const KINDS = [
   { id: 'vendo', label: 'Vendo', color: 'var(--vendo)' },
@@ -165,26 +167,47 @@ async function removeMine () {
   } catch (e) { flash('No se pudo retirar.'); console.warn(e) }
 }
 
-// ---- contactar (handoff por el proxy) + reputación ----
-const sellerRep = ref(null)
-const repLoading = ref(false)
-const myStars = ref(0)       // confianza
-const myAfin = ref(0)        // afinidad
-const rating = ref(false)
-
-async function openContact (pin) {
+// ---- contactar (handoff por el proxy) + perfil/reputación ----
+// El perfil + reputación del vendedor (y el calificarlo) lo maneja la tarjeta
+// compartida <closer-click-profile> dentro del modal de contacto.
+function openContact (pin) {
   contactTarget.value = pin
   contactText.value = `Hola, me interesa tu anuncio "${pin.payload?.title || ''}".`
-  // Reputación del vendedor ANTES del trato, ponderada por mi web-of-trust.
-  sellerRep.value = null
-  myStars.value = 0
-  myAfin.value = 0
-  repLoading.value = true
-  try {
-    const rep = await getReputation()
-    sellerRep.value = rep ? await rep.reputationOf(pin.publickey) : null
-  } catch (e) { console.warn('[reputation] lookup', e) } finally { repLoading.value = false }
 }
+
+// Provider del perfil: cablea identidad + registro de reputación del ecosistema.
+let _profileProvider = null
+async function ensureProfileProvider () {
+  if (_profileProvider) return _profileProvider
+  try {
+    const [identity, reputation] = await Promise.all([getIdentity(), getReputation()])
+    if (reputation) _profileProvider = createVaultProfileProvider({ identity, reputation })
+  } catch (_) { /* sin provider el componente muestra "registro no disponible" */ }
+  return _profileProvider
+}
+function bindProfile (el) {
+  if (!el) return
+  ensureProfileProvider().then((p) => { if (p) el.provider = p })
+}
+function onProfileRate () { flash('Calificación publicada. Gracias.') }
+const profileTheme = {
+  '--ccp-bg': 'var(--panel)',
+  '--ccp-bg-2': 'var(--panel2)',
+  '--ccp-bg-3': 'var(--panel2)',
+  '--ccp-bg-4': 'var(--line)',
+  '--ccp-border': 'var(--line)',
+  '--ccp-text': 'var(--text)',
+  '--ccp-muted': 'var(--muted)',
+  '--ccp-accent': 'var(--accent)',
+  '--ccp-accent-2': '#23b8a6',
+  '--ccp-gold': 'var(--vendo)',
+  '--ccp-derived': 'var(--vendo)',
+  '--ccp-online': 'var(--regalo)',
+  '--ccp-affinity': 'var(--accent)',
+  '--ccp-input-bg': 'var(--panel2)',
+  '--ccp-radius': '12px',
+}
+
 async function sendContact () {
   if (!contactTarget.value) return
   sending.value = true
@@ -202,27 +225,6 @@ async function sendContact () {
     sending.value = false
   }
 }
-// Calificar al vendedor tras el trato (confianza + afinidad), firmado al registro.
-function setConf (n) { myStars.value = n; publishRate() }
-function setAfin (n) { myAfin.value = n; publishRate() }
-async function publishRate () {
-  if (!contactTarget.value) return
-  rating.value = true
-  try {
-    const rep = await getReputation()
-    if (!rep) throw new Error('sin identidad')
-    const indicators = { confianza: myStars.value }
-    if (myAfin.value > 0) indicators.afinidad = myAfin.value
-    await rep.rate(contactTarget.value.publickey, indicators, { notes: `trueque: ${contactTarget.value.payload?.title || ''}`.slice(0, 80) })
-    flash('Calificación publicada. Gracias.')
-  } catch (e) { flash('No se pudo calificar.'); console.warn(e) } finally { rating.value = false }
-}
-const repPct = computed(() => sellerRep.value?.score != null ? Math.round(sellerRep.value.score * 100) : null)
-const afinPct = computed(() => {
-  const a = sellerRep.value?.indicators?.afinidad
-  return a && a.score != null ? Math.round(a.score * 100) : null
-})
-
 // ---- radar (proximidad, sin tiles de terceros) ----
 const canvas = ref(null)
 function drawRadar () {
@@ -410,43 +412,21 @@ async function install () {
         <h3>Contactar</h3>
         <p class="muted small">Sobre: <strong>{{ contactTarget.payload?.title }}</strong></p>
 
-        <!-- Reputación del vendedor, ponderada por mi web-of-trust (anti-sybil) -->
-        <div class="rep">
-          <span class="repLabel">Reputación</span>
-          <span v-if="repLoading" class="muted small">consultando…</span>
-          <template v-else-if="sellerRep">
-            <span v-if="sellerRep.score != null" class="repScore">
-              <strong>{{ repPct }}%</strong> <span class="muted tiny">confianza</span>
-              <span v-if="afinPct != null" class="afinScore">· <strong>{{ afinPct }}%</strong> <span class="muted tiny">afinidad</span></span>
-              <span class="muted small">· {{ sellerRep.trustedCount }} de tu red{{ sellerRep.txBoundCount ? ` · ${sellerRep.txBoundCount} con recibo` : '' }}</span>
-            </span>
-            <span v-else-if="sellerRep.rawCount > 0" class="muted small">{{ sellerRep.rawCount }} reseña(s), ninguna de tu red — señal débil</span>
-            <span v-else class="muted small">sin historial</span>
-          </template>
-          <span v-else class="muted small">—</span>
-        </div>
+        <!-- Perfil + reputación del vendedor (y calificarlo) — tarjeta compartida -->
+        <closer-click-profile
+          :ref="bindProfile"
+          mode="edit"
+          :style="profileTheme"
+          :pubkey="contactTarget.publickey"
+          name="Vendedor"
+          @cc-profile-rate="onProfileRate"
+        ></closer-click-profile>
 
         <label class="fld">
           <span>Mensaje</span>
           <input v-model="contactText" maxlength="280" />
         </label>
         <p class="muted tiny">Se envía por el proxy (cae en su messenger). Seguí la charla ahí.</p>
-
-        <!-- Calificar al vendedor tras el trato (publica atestación firmada) -->
-        <div class="rateRow">
-          <span class="muted small">Confianza:</span>
-          <span class="rateStars">
-            <button v-for="n in 5" :key="n" class="starBtn" :class="{ on: n <= myStars }"
-                    :disabled="rating" @click="setConf(n)">★</button>
-          </span>
-        </div>
-        <div class="rateRow">
-          <span class="muted small">Afinidad:</span>
-          <span class="rateStars">
-            <button v-for="n in 5" :key="n" class="starBtn afin" :class="{ on: n <= myAfin }"
-                    :disabled="rating" @click="setAfin(n)">★</button>
-          </span>
-        </div>
 
         <div class="sheetBtns">
           <button class="btn ghost" @click="contactTarget = null">Cerrar</button>
