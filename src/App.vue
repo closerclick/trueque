@@ -6,6 +6,7 @@ import { contactSeller } from './services/proxy'
 import { getReputation } from './services/reputation'
 import { createVaultProfileProvider } from '@closerclick/closer-click-profile'
 import '@closerclick/closer-click-profile'
+import { useBackLayer } from '@closerclick/closer-click-nav/vue'
 
 const KINDS = [
   { id: 'vendo', label: 'Vendo', color: 'var(--vendo)' },
@@ -37,6 +38,11 @@ const publishing = ref(false)
 const contactTarget = ref(null)
 const contactText = ref('')
 const sending = ref(false)
+
+// Volver unificado (@closerclick/closer-click-nav): el botón físico / chevron
+// cierra el modal abierto antes de salir hacia closer.click.
+useBackLayer(showPublish)
+useBackLayer(contactTarget, { onClose: () => { contactTarget.value = null } })
 
 const toast = ref('')
 let toastTimer = null
@@ -285,6 +291,7 @@ async function install () {
 <template>
   <div class="app">
     <header class="topbar">
+      <closer-click-back class="cc-back"></closer-click-back>
       <div class="brand">
         <img src="/icon.svg" alt="" width="26" height="26" />
         <span>Trueque</span>
@@ -460,6 +467,7 @@ async function install () {
   padding: .6rem .8rem; padding-top: calc(.6rem + env(safe-area-inset-top));
   border-bottom: 1px solid var(--line); background: var(--panel); position: sticky; top: 0; z-index: 5;
 }
+.cc-back { color: var(--text, currentColor); --cc-back-size: 36px; margin-left: -4px; }
 .brand { display: flex; align-items: center; gap: .45rem; font-weight: 800; font-size: 1.1rem; }
 .actions { margin-left: auto; }
 .topbar-coin { margin-left: .25rem; }
