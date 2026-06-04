@@ -216,7 +216,7 @@ async function sendContact () {
       title: contactTarget.value.payload?.title || '',
       text: contactText.value.trim().slice(0, 280)
     })
-    flash('Mensaje enviado. Seguí la charla en el messenger.')
+    flash('Mensaje enviado. Sigue la charla en el messenger.')
     contactTarget.value = null
   } catch (e) {
     flash('No se pudo contactar (proxy/identidad).')
@@ -328,7 +328,7 @@ async function install () {
       <div class="radarWrap">
         <canvas ref="canvas" class="radar"></canvas>
         <div v-if="locating" class="radarHint">Ubicándote…</div>
-        <div v-else-if="!pos" class="radarHint">Activá la ubicación</div>
+        <div v-else-if="!pos" class="radarHint">Activa la ubicación</div>
         <div v-else class="radarScale">{{ radiusLabel }}</div>
       </div>
 
@@ -342,7 +342,7 @@ async function install () {
 
       <!-- lista -->
       <div class="listHead">
-        <h2>Cerca tuyo <span class="muted" v-if="!loading">({{ pins.length }})</span></h2>
+        <h2>Cerca de ti <span class="muted" v-if="!loading">({{ pins.length }})</span></h2>
         <button class="btn ghost small" :disabled="loading || !pos" @click="refresh">{{ loading ? '…' : 'Actualizar' }}</button>
       </div>
       <p v-if="netError" class="banner err">{{ netError }}</p>
@@ -360,7 +360,7 @@ async function install () {
           <button class="btn primary small" @click="openContact(p)">Contactar</button>
         </li>
         <li v-if="!pins.length && pos && !loading" class="empty">
-          No hay anuncios en {{ radiusLabel }}. Subí el radio o publicá el primero.
+          No hay anuncios en {{ radiusLabel }}. Sube el radio o publica el primero.
         </li>
       </ul>
     </main>
@@ -426,7 +426,7 @@ async function install () {
           <span>Mensaje</span>
           <input v-model="contactText" maxlength="280" />
         </label>
-        <p class="muted tiny">Se envía por el proxy (cae en su messenger). Seguí la charla ahí.</p>
+        <p class="muted tiny">Se envía por el proxy (cae en su messenger). Sigue la charla ahí.</p>
 
         <div class="sheetBtns">
           <button class="btn ghost" @click="contactTarget = null">Cerrar</button>
