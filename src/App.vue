@@ -196,6 +196,20 @@ function bindProfile (el) {
   ensureProfileProvider().then((p) => { if (p) el.provider = p })
 }
 function onProfileRate () { flash('Calificación publicada. Gracias.') }
+// "Mi perfil": botón del header (a la izquierda de la moneda de soporte) que abre
+// el MISMO Web Component compartido en modo self con mi identidad del vault.
+const myProfilePk = ref(null)
+const myProfileName = ref(null)
+async function openMyProfile () {
+  try {
+    const identity = await getIdentity()
+    const pk = identity?.me?.publickey
+    if (!pk) return
+    myProfileName.value = identity?.me?.nickname || null
+    myProfilePk.value = pk
+  } catch (_) { /* sin identidad no abre */ }
+}
+useBackLayer(myProfilePk, { onClose: () => { myProfilePk.value = null } })
 const profileTheme = {
   '--ccp-bg': 'var(--panel)',
   '--ccp-bg-2': 'var(--panel2)',
@@ -299,6 +313,11 @@ async function install () {
       <div class="actions">
         <button v-if="canInstall" class="btn ghost small" @click="install">Instalar</button>
       </div>
+      <button class="profile-btn" data-testid="my-profile" @click="openMyProfile" title="Mi perfil" aria-label="Mi perfil">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <circle cx="12" cy="8" r="4" /><path d="M4 20c0-4 3.6-6 8-6s8 2 8 6" />
+        </svg>
+      </button>
       <closer-click-support
         class="topbar-coin"
         href="https://ko-fi.com/closerclick"
@@ -442,6 +461,19 @@ async function install () {
       </div>
     </div>
 
+    <!-- Mi perfil (botón del header, a la izquierda de la moneda): mismo Web
+         Component compartido en modo self con mi identidad del vault. -->
+    <closer-click-profile
+      v-if="myProfilePk"
+      :ref="bindProfile"
+      modal
+      mode="self"
+      :pubkey="myProfilePk"
+      :name="myProfileName"
+      :style="profileTheme"
+      @cc-profile-close="myProfilePk = null"
+    ></closer-click-profile>
+
     <div v-if="toast" class="toast">{{ toast }}</div>
   </div>
 </template>
@@ -471,6 +503,15 @@ async function install () {
 .brand { display: flex; align-items: center; gap: .45rem; font-weight: 800; font-size: 1.1rem; }
 .actions { margin-left: auto; }
 .topbar-coin { margin-left: .25rem; }
+/* "Mi perfil": botón circular ghost a la izquierda de la moneda de soporte. */
+.profile-btn {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 34px; height: 34px; padding: 0; flex-shrink: 0;
+  border: 1px solid var(--line); background: var(--panel2); color: var(--text);
+  border-radius: 50%; cursor: pointer; transition: .15s;
+}
+.profile-btn svg { width: 18px; height: 18px; display: block; }
+.profile-btn:hover { border-color: var(--accent); color: var(--accent); }
 
 .main { flex: 1; width: 100%; max-width: 680px; margin: 0 auto; padding: .8rem; }
 
